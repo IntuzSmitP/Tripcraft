@@ -1,5 +1,8 @@
 """
-Tests for AgentState — persistence, tool results, assumptions.
+State machine persistence and audit logging tests.
+
+Ensures the agent's memory structures correctly record chronological execution
+logs, immutable tool results, and the invalidation lifecycle of budget assumptions.
 """
 
 import pytest

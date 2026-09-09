@@ -1,8 +1,9 @@
 """
-Integration tests for the core agent loop.
+Integration test suite for the core agent execution loop.
 
-Uses a mocked LangChain LLM to simulate deterministic sequences of
-tool calls and final text outputs without hitting any real API.
+We leverage a mocked LangChain LLM to ensure deterministic, fast-running tests
+that validate the sequence of tool executions and state transitions without
+flaky dependencies on external model providers.
 """
 
 import json
@@ -18,10 +19,11 @@ from app.tools.flights import search_flights
 from app.tools.hotels import search_hotels
 
 
-# ── Mock LangChain LLM ──────────────────────────────────────────
+# --- LangChain LLM Mocks ---
+# These mock helpers simulate the LangChain conversational loop and tool invocation sequence.
 
 def _make_tool_call_response(name: str, args: dict[str, Any]) -> MagicMock:
-    """Return a mock AIMessage with a tool call."""
+    """Constructs a mock AIMessage representing a tool invocation request from the LLM."""
     tc = MagicMock()
     tc.id = f"call_{name}"
     tc.function.name = name
@@ -34,7 +36,7 @@ def _make_tool_call_response(name: str, args: dict[str, Any]) -> MagicMock:
 
 
 def _make_text_response(text: str) -> MagicMock:
-    """Return a mock AIMessage with text content and no tool calls."""
+    """Constructs a mock AIMessage representing a standard conversational response without tool calls."""
     msg = MagicMock()
     msg.tool_calls = []
     msg.content = text
@@ -42,7 +44,10 @@ def _make_text_response(text: str) -> MagicMock:
 
 
 def build_mock_llm(responses: list[Any]):
-    """Build a mock LangChain LLM that returns responses in sequence."""
+    """
+    Creates an AsyncMock LangChain LLM that plays back a predefined sequence of responses.
+    This allows us to deterministically test multi-turn agent interactions.
+    """
     call_count = {"n": 0}
 
     async def ainvoke(messages, **kwargs):
@@ -57,7 +62,7 @@ def build_mock_llm(responses: list[Any]):
     return mock
 
 
-# ── Fixtures ────────────────────────────────────────────────────
+# --- Test Fixtures ---
 
 @pytest.fixture
 def registry():
@@ -67,12 +72,12 @@ def registry():
     return reg
 
 
-# ── Tests ────────────────────────────────────────────────────────
+# --- Integration Tests ---
 
 
 @pytest.mark.asyncio
 async def test_agent_single_tool_then_finish(registry, monkeypatch):
-    """Agent calls one tool then returns a final JSON plan."""
+    """Validates the standard happy path: the agent invokes a single tool and then finalizes the plan."""
     final_json = {"trip": {"destination": "Mumbai"}, "status": "feasible"}
 
     mock_llm = build_mock_llm([
@@ -80,7 +85,7 @@ async def test_agent_single_tool_then_finish(registry, monkeypatch):
         _make_text_response(json.dumps(final_json)),
     ])
 
-    # Patch create_llm so the loop uses our mock
+    # Inject our deterministic mock LLM into the agent loop
     monkeypatch.setattr("app.agent.loop.create_llm", lambda tools: mock_llm)
 
     state = AgentState(goal="Go to Mumbai")
@@ -96,7 +101,7 @@ async def test_agent_single_tool_then_finish(registry, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_agent_multiple_tools(registry, monkeypatch):
-    """Agent makes multiple sequential tool calls then finishes."""
+    """Ensures the agent loop can correctly handle a chain of sequential tool executions before finalizing."""
     final_json = {"status": "feasible"}
 
     mock_llm = build_mock_llm([
@@ -119,7 +124,10 @@ async def test_agent_multiple_tools(registry, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_agent_max_iterations(registry, monkeypatch):
-    """Loop terminates gracefully when max iterations is reached."""
+    """
+    Validates circuit breaker logic: the loop must terminate and report an error
+    if the agent gets stuck in an execution loop and hits the iteration limit.
+    """
     monkeypatch.setattr("app.agent.loop.settings.max_agent_iterations", 2)
 
     mock_llm = build_mock_llm([
@@ -137,4 +145,4 @@ async def test_agent_max_iterations(registry, monkeypatch):
     assert state.status == "error"
     assert state.iterations == 2
     last_log = state.execution_log[-1]
-    assert "maximum iterations" in last_log.detail.lower()
+    assert "taking longer than expected" in last_log.detail.lower()

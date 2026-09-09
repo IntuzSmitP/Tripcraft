@@ -1,1 +1,3 @@
-# TripCraft Models
+"""
+TripCraft core domain models.
+"""

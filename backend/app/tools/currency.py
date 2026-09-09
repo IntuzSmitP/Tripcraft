@@ -1,7 +1,9 @@
 """
-Mock currency conversion tool.
+Static currency exchange utility.
 
-Uses static exchange rates — no external API calls.
+Operates entirely offline using a hardcoded exchange rate matrix.
+This guarantees speed and deterministic results during test runs, bypassing the
+need for rate-limited third-party financial APIs.
 """
 
 from __future__ import annotations

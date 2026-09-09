@@ -1,8 +1,10 @@
 """
-Tool registry — registers tools and dispatches calls.
+Dynamic tool registration and execution dispatcher.
 
-Uses LangChain's StructuredTool which auto-generates the JSON schema
-from Python type hints and docstrings — no manual schema writing needed.
+Leverages LangChain's `StructuredTool` to automatically infer JSON schemas 
+from Python type hints and docstrings. This eliminates boilerplate schema 
+definitions and ensures our LLM bindings are always perfectly synced with 
+the underlying Python signatures.
 """
 
 from __future__ import annotations

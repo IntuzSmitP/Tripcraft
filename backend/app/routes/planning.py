@@ -1,11 +1,9 @@
 """
-Planning API routes.
+REST and SSE controllers for the planning lifecycle.
 
-Endpoints:
-  POST /api/plan         — start a new planning session
-  GET  /api/plan/{id}/stream  — SSE stream of execution log
-  GET  /api/plan/{id}/state   — inspect full agent state
-  GET  /api/plan/{id}/result  — get final structured output
+Exposes endpoints for initiating asynchronous planning sessions, 
+streaming real-time execution logs via Server-Sent Events (SSE), 
+and retrieving the final serialized trip plan or full state dumps.
 """
 
 from __future__ import annotations
@@ -15,12 +13,12 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from app.agent.loop import run_agent_stream, _parse_final_json
+from app.agent.loop import run_agent_stream, _parse_final_json, _extract_budget_from_text as _extract_budget_from_goal
 from app.agent.tool_registry import ToolRegistry
 from app.config import settings
 from app.models.plan import FinalOutput
@@ -35,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Planning"])
 
-# ── Auth ────────────────────────────────────────────────────────
+# Auth
 
 security = HTTPBearer()
 
@@ -49,7 +47,7 @@ async def verify_token(
     return credentials.credentials
 
 
-# ── In-memory session store ─────────────────────────────────────
+# In-memory session store
 
 _sessions: dict[str, dict[str, Any]] = {}
 
@@ -65,13 +63,13 @@ def _build_registry() -> ToolRegistry:
     return registry
 
 
-# ── Request / Response models ───────────────────────────────────
+# Request / Response models
 
 
 class PlanRequest(BaseModel):
     goal: str = Field(
         ...,
-        min_length=5,
+        min_length=5,   
         max_length=500,
         description="Natural language travel goal",
         json_schema_extra={"example": "Plan a 3-day trip to Goa under ₹15,000"},
@@ -84,7 +82,7 @@ class PlanStartResponse(BaseModel):
     message: str
 
 
-# ── Endpoints ───────────────────────────────────────────────────
+# Endpoints
 
 
 @router.post("/plan", response_model=PlanStartResponse)
@@ -98,6 +96,16 @@ async def start_plan(
     The agent runs asynchronously. Use the /stream endpoint to
     follow progress in real time, or /result to get the final plan.
     """
+    if len(_sessions) >= 500:
+        # Simple cleanup of done sessions first
+        done_keys = [k for k, v in _sessions.items() if v.get("done")]
+        for k in done_keys:
+            del _sessions[k]
+        
+        # If still full, reject
+        if len(_sessions) >= 500:
+            raise HTTPException(status_code=429, detail="Too many active planning sessions. Please try again later.")
+
     state = AgentState(goal=request.goal)
     session_id = state.id
 
@@ -133,7 +141,7 @@ async def start_plan(
 
 @router.get("/plan/{session_id}/stream")
 async def stream_execution_log(
-    session_id: str,
+    session_id: str = Path(..., max_length=50),
     _token: str = Depends(verify_token),
 ) -> EventSourceResponse:
     """
@@ -183,7 +191,7 @@ async def stream_execution_log(
 
 @router.get("/plan/{session_id}/state")
 async def get_state(
-    session_id: str,
+    session_id: str = Path(..., max_length=50),
     _token: str = Depends(verify_token),
 ) -> dict:
     """Return the full agent state for debugging / inspection."""
@@ -196,7 +204,7 @@ async def get_state(
 
 @router.get("/plan/{session_id}/result")
 async def get_result(
-    session_id: str,
+    session_id: str = Path(..., max_length=50),
     _token: str = Depends(verify_token),
 ) -> dict:
     """Return the final structured travel plan."""
@@ -221,14 +229,168 @@ async def get_result(
     return output
 
 
+@router.get("/plan/{session_id}/hotels")
+async def get_hotels(
+    session_id: str = Path(..., max_length=50),
+    _token: str = Depends(verify_token),
+) -> dict:
+    """Return all hotel options scraped during the session, organized by city."""
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    session = _sessions[session_id]
+    state: AgentState = session["state"]
+    
+    cities_map: dict[str, list[dict]] = {}
+    all_hotels: list[dict] = []
+    
+    for tr in state.tool_results:
+        if tr.tool_name == "search_hotels" and isinstance(tr.result, dict):
+            city_name = tr.result.get("city") or "Destination"
+            options = tr.result.get("options", [])
+            
+            if city_name not in cities_map:
+                cities_map[city_name] = []
+                
+            for opt in options:
+                opt_copy = dict(opt)
+                opt_copy["city"] = city_name
+                cities_map[city_name].append(opt_copy)
+                all_hotels.append(opt_copy)
+                
+    return {
+        "hotels": all_hotels,
+        "by_city": cities_map,
+        "cities": list(cities_map.keys())
+    }
+
+
+class HotelUpdateRequest(BaseModel):
+    hotel_name: str
+    city: str | None = None
+    
+@router.patch("/plan/{session_id}/hotel")
+async def update_hotel(
+    request: HotelUpdateRequest,
+    session_id: str = Path(..., max_length=50),
+    _token: str = Depends(verify_token),
+) -> dict:
+    """Update the selected hotel for a completed plan."""
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    session = _sessions[session_id]
+    state: AgentState = session["state"]
+    output = session.get("output")
+    
+    if not output:
+        raise HTTPException(status_code=400, detail="Plan not yet completed")
+        
+    # Find the hotel in tool results across all cities
+    target_hotel = None
+    hotel_city = None
+    city_nights = None
+    for tr in state.tool_results:
+        if tr.tool_name == "search_hotels" and isinstance(tr.result, dict):
+            c_name = tr.result.get("city")
+            if request.city and c_name and c_name.lower() != request.city.lower():
+                continue
+
+            for h in tr.result.get("options", []):
+                if h.get("name") == request.hotel_name:
+                    target_hotel = h
+                    hotel_city = c_name
+                    city_nights = tr.result.get("nights")
+                    break
+            if target_hotel:
+                break
+                
+    if not target_hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found in session options")
+        
+    # How many nights?
+    nights = city_nights or max(state.constraints.get("duration_days", 3) - 1, 1)
+    
+    # Calculate new price
+    price_per_night = target_hotel.get("price_per_night", 0)
+    total_price = price_per_night * nights
+    
+    # Update hotel info in output
+    from app.models.plan import HotelInfo
+    
+    new_hotel = HotelInfo(
+        name=target_hotel.get("name"),
+        city=hotel_city or target_hotel.get("location"),
+        price_per_night=price_per_night,
+        total_price=total_price,
+        nights=nights,
+        rating=target_hotel.get("rating"),
+        currency="INR"
+    )
+
+    # Initialize / update output.hotels list
+    existing_hotels = []
+    if isinstance(output.hotels, list) and output.hotels:
+        for h in output.hotels:
+            h_dict = h.model_dump() if hasattr(h, "model_dump") else dict(h)
+            existing_hotels.append(h_dict)
+    elif output.hotel:
+        h_dict = output.hotel.model_dump() if hasattr(output.hotel, "model_dump") else dict(output.hotel)
+        if h_dict.get("name"):
+            existing_hotels.append(h_dict)
+
+    # Check if a hotel for hotel_city already exists in existing_hotels
+    updated_hotels = []
+    replaced = False
+    for h in existing_hotels:
+        h_city = h.get("city")
+        if not replaced and ((h_city and hotel_city and h_city.lower() == hotel_city.lower()) or not h_city or not hotel_city or len(existing_hotels) == 1):
+            updated_hotels.append(new_hotel.model_dump())
+            replaced = True
+        else:
+            updated_hotels.append(h)
+            
+    if not replaced:
+        updated_hotels.append(new_hotel.model_dump())
+        
+    output.hotels = [HotelInfo(**h) for h in updated_hotels]
+    output.hotel = new_hotel
+    
+    # Recalculate total hotel costs across all selected hotels
+    total_hotels_cost = sum(h.get("total_price", 0) for h in updated_hotels)
+    
+    # Update budget
+    if isinstance(output.budget, BaseModel):
+        if output.budget.breakdown is not None:
+            output.budget.breakdown["hotels"] = total_hotels_cost
+            output.budget.estimated = sum(output.budget.breakdown.values())
+    elif isinstance(output.budget, dict):
+        bd = output.budget.get("breakdown", {})
+        bd["hotels"] = total_hotels_cost
+        output.budget["breakdown"] = bd
+        output.budget["estimated"] = sum(bd.values())
+        
+    # Update state budget to match
+    state.budget.breakdown["hotels"] = total_hotels_cost
+    state.budget.spent = sum(state.budget.breakdown.values())
+    state.budget.remaining = state.budget.total - state.budget.spent
+    
+    # Add an execution log entry indicating manual change
+    state.add_log("MANUAL_UPDATE", f"User updated hotel for {hotel_city or 'stay'} to {target_hotel.get('name')}")
+    if isinstance(output.execution_summary, list):
+        output.execution_summary.append(f"User changed accommodation for {hotel_city or 'stay'} to {target_hotel.get('name')}")
+        
+    return output.model_dump() if hasattr(output, "model_dump") else output
+
+
 class UserInputRequest(BaseModel):
-    input: str = Field(..., min_length=1, description="The user's answer to the agent's question")
+    input: str = Field(..., min_length=1, max_length=500, description="The user's answer to the agent's question")
 
 
 @router.post("/plan/{session_id}/input")
 async def provide_user_input(
-    session_id: str,
     request: UserInputRequest,
+    session_id: str = Path(..., max_length=50),
     _token: str = Depends(verify_token),
 ) -> dict:
     """Provide input to a suspended planning session waiting for user response."""
@@ -247,7 +409,7 @@ async def provide_user_input(
     return {"status": "resumed", "message": "Input received, agent is resuming."}
 
 
-# ── Background task ─────────────────────────────────────────────
+# Background task
 
 
 async def _run_planning_session(session_id: str, goal: str) -> None:
@@ -270,45 +432,25 @@ async def _run_planning_session(session_id: str, goal: str) -> None:
                 except Exception:
                     final_output = FinalOutput(**{k: v for k, v in parsed.items() if k in FinalOutput.model_fields})
 
+        if final_output:
+            _normalize_hotels(final_output, state)
+
         session["output"] = final_output
 
     except Exception as e:
+        from app.agent.error_messages import friendly_error
         logger.exception("Planning session %s failed", session_id)
         state.status = "error"
-        state.add_log("ERROR", f"Planning failed: {str(e)}")
+        state.add_log("ERROR", friendly_error(e))
 
     finally:
         session["done"] = True
 
 
-# ── Helper extractors ───────────────────────────────────────────
+# Helper extractors
 
 
-def _extract_budget_from_goal(goal: str) -> float | None:
-    """Try to extract a numeric budget from the goal string."""
-    import re
-
-    # Match patterns like ₹15,000 or ₹15000 or 15000 INR or Rs.15000
-    patterns = [
-        r'₹\s*([\d,]+)',
-        r'Rs\.?\s*([\d,]+)',
-        r'INR\s*([\d,]+)',
-        r'([\d,]+)\s*(?:INR|rupees?)',
-        r'budget\s*(?:of|:)?\s*₹?\s*([\d,]+)',
-        r'under\s*₹?\s*([\d,]+)',
-        r'within\s*₹?\s*([\d,]+)',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, goal, re.IGNORECASE)
-        if match:
-            amount_str = match.group(1).replace(",", "")
-            try:
-                return float(amount_str)
-            except ValueError:
-                continue
-
-    return None
+from app.agent.loop import _extract_budget_from_text as _extract_budget_from_goal
 
 
 def _extract_constraints_from_goal(goal: str) -> dict[str, Any]:
@@ -329,3 +471,82 @@ def _extract_constraints_from_goal(goal: str) -> dict[str, Any]:
         constraints["currency"] = "INR"
 
     return constraints
+
+
+def _normalize_hotels(output: FinalOutput, state: AgentState) -> None:
+    """Ensure output.hotels is cleanly populated for every searched city."""
+    if not output:
+        return
+        
+    city_options: dict[str, list[dict]] = {}
+    city_nights: dict[str, int] = {}
+    
+    for tr in state.tool_results:
+        if tr.tool_name == "search_hotels" and isinstance(tr.result, dict):
+            c_name = tr.result.get("city") or "Destination"
+            opts = tr.result.get("options", [])
+            nights = tr.result.get("nights", 1)
+            if opts:
+                city_options[c_name] = opts
+                city_nights[c_name] = nights
+                
+    if not city_options:
+        return
+        
+    from app.models.plan import HotelInfo
+
+    selected_hotels: list[HotelInfo] = []
+    
+    llm_text = ""
+    if isinstance(output.hotel, BaseModel) and output.hotel.name:
+        llm_text += output.hotel.name + " "
+    elif isinstance(output.hotel, dict) and output.hotel.get("name"):
+        llm_text += str(output.hotel.get("name")) + " "
+    if isinstance(output.execution_summary, list):
+        llm_text += " ".join(output.execution_summary)
+        
+    for c_name, opts in city_options.items():
+        matched_opt = None
+        for opt in opts:
+            h_name = opt.get("name", "")
+            if h_name and h_name.lower() in llm_text.lower():
+                matched_opt = opt
+                break
+                
+        if not matched_opt:
+            matched_opt = opts[0]
+            
+        nights = city_nights.get(c_name, 1)
+        price_per_night = matched_opt.get("price_per_night", 0)
+        total_price = price_per_night * nights
+        
+        h_info = HotelInfo(
+            name=matched_opt.get("name"),
+            city=c_name,
+            price_per_night=price_per_night,
+            total_price=total_price,
+            nights=nights,
+            rating=matched_opt.get("rating"),
+            currency="INR"
+        )
+        selected_hotels.append(h_info)
+        
+    output.hotels = selected_hotels
+    if selected_hotels:
+        output.hotel = selected_hotels[0]
+        
+    total_hotel_cost = sum(h.total_price or 0 for h in selected_hotels)
+    if isinstance(output.budget, BaseModel):
+        if output.budget.breakdown is not None:
+            output.budget.breakdown["hotels"] = total_hotel_cost
+            output.budget.estimated = sum(output.budget.breakdown.values())
+    elif isinstance(output.budget, dict):
+        bd = output.budget.get("breakdown", {})
+        bd["hotels"] = total_hotel_cost
+        output.budget["breakdown"] = bd
+        output.budget["estimated"] = sum(bd.values())
+        
+    state.budget.breakdown["hotels"] = total_hotel_cost
+    state.budget.spent = sum(state.budget.breakdown.values())
+    state.budget.remaining = state.budget.total - state.budget.spent
+

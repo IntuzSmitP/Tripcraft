@@ -1,7 +1,8 @@
 """
-TripCraft — FastAPI application entry point.
+FastAPI application bootstrapper.
 
-Configures CORS, includes routes, and sets up structured logging.
+Initializes the ASGI application lifecycle, configures global middleware (CORS),
+mounts route handlers, and establishes structured logging formatting for observability.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from app.config import settings
 from app.routes.planning import router as planning_router
 
 
-# ── Logging ─────────────────────────────────────────────────────
+# Logging
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +33,7 @@ logging.getLogger("google").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# ── App ─────────────────────────────────────────────────────────
+# App
 
 app = FastAPI(
     title="TripCraft",
@@ -47,7 +48,7 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ── CORS ────────────────────────────────────────────────────────
+# CORS
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,12 +58,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Routes ──────────────────────────────────────────────────────
+# Routes
 
 app.include_router(planning_router)
 
 
-# ── Health check ────────────────────────────────────────────────
+# Health check
 
 
 @app.get("/health", tags=["System"])

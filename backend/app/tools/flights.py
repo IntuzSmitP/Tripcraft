@@ -1,15 +1,15 @@
 """
-Mock flight search tool.
+Flight availability mock service.
 
-The Goa route deliberately returns expensive flights to trigger
-the agent's self-correction logic — this is the deterministic
-scenario required by the spec.
+To ensure deterministic testing of the agent's budget fallback scenarios,
+the "Goa" route is hardcoded to return inflated prices. This forces the 
+planning loop to hit constraints and exercise its self-correction pathways.
 """
 
 from __future__ import annotations
 
 
-# ── Route-specific mock data ────────────────────────────────────
+# Route-specific mock data
 
 _FLIGHT_DATA: dict[str, list[dict]] = {
     "goa": [

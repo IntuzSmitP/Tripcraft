@@ -1,16 +1,16 @@
 def ask_user(question: str) -> dict:
     """
-    Ask the user a question to clarify missing constraints or preferences.
+    Suspends agent execution to solicit clarifying input from the user.
 
-    Use this tool when the user's prompt is missing critical information
-    like origin, destination, budget, or dates, and you need them to specify it
-    rather than guessing.
+    This tool acts as a circuit breaker when the LLM detects underspecified
+    requirements (e.g., missing destination, budget, or dates). Instead of
+    hallucinating parameters, the agent halts and prompts the user directly.
 
     Args:
-        question: The exact text of the question to ask the user.
+        question: The precise clarification requested by the agent.
 
     Returns:
-        A dict containing the user's response.
+        A dictionary wrapping the raw user input string.
     """
     # Note: Execution logic for this tool is intercepted by the agent loop
     # in app/agent/loop.py, which actually suspends execution and waits for input.

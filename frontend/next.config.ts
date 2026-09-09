@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Allow LAN access from your IP
+  allowedDevOrigins: ['192.168.10.180'],
 };
 
 export default nextConfig;

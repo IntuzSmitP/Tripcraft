@@ -1,7 +1,7 @@
 "use client"
 
 import { motion } from "framer-motion"
-import { BrainCircuit, Wrench, FileCheck, ArrowLeftRight, CheckCircle2, MessageCircleQuestion } from "lucide-react"
+import { BrainCircuit, Wrench, FileCheck, ArrowLeftRight, CheckCircle2, MessageCircleQuestion, AlertCircle } from "lucide-react"
 
 export interface LogEntry {
   step: number
@@ -11,67 +11,93 @@ export interface LogEntry {
 }
 
 const ACTION_CONFIG: Record<string, any> = {
-  "PLAN": { icon: BrainCircuit, color: "text-emerald-400", bg: "bg-emerald-400/10", border: "border-emerald-400/20" },
-  "TOOL": { icon: Wrench, color: "text-blue-400", bg: "bg-blue-400/10", border: "border-blue-400/20" },
-  "RESULT": { icon: FileCheck, color: "text-amber-400", bg: "bg-amber-400/10", border: "border-amber-400/20" },
-  "RE-EVALUATE": { icon: ArrowLeftRight, color: "text-orange-400", bg: "bg-orange-400/10", border: "border-orange-400/20" },
-  "FINAL": { icon: CheckCircle2, color: "text-purple-400", bg: "bg-purple-400/10", border: "border-purple-400/20" },
-  "ERROR": { icon: BrainCircuit, color: "text-red-400", bg: "bg-red-400/10", border: "border-red-400/20" },
-  "WAITING": { icon: MessageCircleQuestion, color: "text-pink-400", bg: "bg-pink-400/10", border: "border-pink-400/20" }
+  "PLAN":        { icon: BrainCircuit },
+  "TOOL":        { icon: Wrench },
+  "RESULT":      { icon: FileCheck },
+  "RE-EVALUATE": { icon: ArrowLeftRight },
+  "FINAL":       { icon: CheckCircle2 },
+  "ERROR":       { icon: AlertCircle },
+  "WAITING":     { icon: MessageCircleQuestion },
 }
 
 export function ExecutionLog({ logs }: { logs: LogEntry[] }) {
-  if (logs.length === 0) return null
+  if (logs.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center text-sm font-mono" style={{ color: "var(--color-text-secondary)" }}>
+        Agent execution log empty.
+      </div>
+    )
+  }
 
   return (
-    <div className="w-full max-w-3xl mx-auto mt-12 space-y-4 relative">
-      <div className="absolute left-8 top-4 bottom-4 w-px bg-slate-800 -z-10"></div>
-      
+    <div className="w-full space-y-4 relative font-mono">
+      {/* Vertical timeline line */}
+      <div className="absolute left-[20px] top-4 bottom-4 w-px -z-10" style={{ backgroundColor: "var(--color-border-subtle)" }} />
+
       {logs.map((log, index) => {
         const config = ACTION_CONFIG[log.action] || ACTION_CONFIG["PLAN"]
         const Icon = config.icon
 
+        // Highlight errors in warning color, final success in green, others in muted primary text
+        let iconColor = "var(--color-text-secondary)"
+        if (log.action === "ERROR") iconColor = "var(--color-warn-500)"
+        else if (log.action === "FINAL") iconColor = "var(--color-success-500)"
+        else if (log.action === "WAITING") iconColor = "var(--color-accent-500)"
+
         return (
-          <motion.div 
+          <motion.div
             key={index}
-            initial={{ opacity: 0, x: -20, height: 0 }}
-            animate={{ opacity: 1, x: 0, height: "auto" }}
-            transition={{ duration: 0.4 }}
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.2 }}
             className="flex gap-4 items-start"
           >
-            <div className={`w-16 flex-shrink-0 flex justify-center py-2`}>
-              <div className={`p-2 rounded-full border ${config.bg} ${config.border} ${config.color}`}>
-                <Icon className="w-5 h-5" />
+            {/* Icon node */}
+            <div className="shrink-0 mt-1">
+              <div 
+                className="w-10 h-10 flex items-center justify-center rounded-lg"
+                style={{ 
+                  backgroundColor: "var(--color-bg-raised)",
+                  border: "1px solid var(--color-border)",
+                  color: iconColor
+                }}
+              >
+                <Icon className="w-4 h-4" />
               </div>
             </div>
-            
-            <div className={`flex-grow glass-card p-4 my-1`}>
-              <div className="flex items-center gap-2 mb-1">
-                <span className={`text-xs font-bold tracking-wider ${config.color}`}>
+
+            {/* Content */}
+            <div className="flex-1 min-w-0 pt-1">
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <span className="text-xs tracking-wider" style={{ color: iconColor }}>
                   {log.action}
                 </span>
-                <span className="text-xs text-slate-500">
-                  Step {log.step}
+                <span className="text-[10px]" style={{ color: "var(--color-text-secondary)" }}>
+                  STEP {log.step}
                 </span>
               </div>
-              <div className={`text-sm ${log.action === "TOOL" ? "font-mono text-blue-200" : "text-slate-300"}`}>
+              <div
+                className="text-[11px] leading-relaxed break-words whitespace-pre-wrap"
+                style={{ color: "var(--color-text-primary)" }}
+              >
                 {log.detail}
               </div>
             </div>
           </motion.div>
         )
       })}
-      
-      {/* Animated loading indicator if last log is not FINAL or ERROR */}
+
+      {/* Pulsing dot when still running */}
       {logs.length > 0 && !["FINAL", "ERROR"].includes(logs[logs.length - 1].action) && (
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="flex gap-4 items-start mt-4"
+          className="flex gap-4 items-center"
         >
-          <div className="w-16 flex-shrink-0 flex justify-center py-2">
-            <div className="w-2 h-2 rounded-full bg-brand-500 animate-ping"></div>
+          <div className="shrink-0 w-10 flex justify-center">
+            <div className="w-1.5 h-1.5 rounded-full animate-ping" style={{ backgroundColor: "var(--color-accent-500)" }} />
           </div>
+          <span className="text-[11px] italic" style={{ color: "var(--color-text-secondary)" }}>Processing…</span>
         </motion.div>
       )}
     </div>

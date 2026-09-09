@@ -1,8 +1,9 @@
 """
-Agent state models — the persistent memory of a planning session.
+Agent state and memory models.
 
-Every field in AgentState is serialisable so the full state can be
-returned as JSON for the frontend state inspector.
+Defines the state machine properties and persistent memory of a planning session.
+All structures strictly adhere to Pydantic schemas, ensuring robust serialization
+for the frontend state inspector and deterministic LLM context injection.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-# ── Granular sub-models ─────────────────────────────────────────
+# Granular sub-models
 
 
 class Assumption(BaseModel):
@@ -57,16 +58,16 @@ class BudgetTracker(BaseModel):
     )
 
 
-# ── Main Agent State ────────────────────────────────────────────
+# Main Agent State
 
 
 class AgentState(BaseModel):
     """
-    Complete in-memory state for one planning session.
+    Complete execution context and memory for a single planning session.
 
-    This object is the *single source of truth* for the agent loop.
-    It is mutated after every tool call and LLM turn, and can be
-    serialised at any point for debugging / the state inspector.
+    Acts as the single source of truth for the agent state machine.
+    Mutated iteratively by tool invocations and LLM evaluations, it guarantees
+    a serializable audit trail for debugging and client-side inspection.
     """
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -97,7 +98,7 @@ class AgentState(BaseModel):
         description="Temporarily stores the user's response while the agent is paused",
     )
 
-    # ── helpers ─────────────────────────────────────────────────
+    # helpers
 
     def add_log(self, action: str, detail: str) -> ExecutionLogEntry:
         """Append an entry to the execution log and return it."""

@@ -1,7 +1,8 @@
 """
-Mock weather check tool.
+Static climatology service.
 
-Returns seasonal weather data based on city and month.
+Provides deterministic seasonal weather profiles based on location and month,
+ensuring consistent recommendations for the planning agent without external API latency.
 """
 
 from __future__ import annotations

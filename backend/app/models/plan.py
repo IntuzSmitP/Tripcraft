@@ -1,5 +1,8 @@
 """
-Final output models — the structured JSON returned to the user.
+Structured payload schemas for the final execution response.
+
+These models define the strict API contract between the LLM's final 
+planning output and the client interface, ensuring predictable parsing.
 """
 
 from __future__ import annotations
@@ -64,6 +67,7 @@ class FinalOutput(BaseModel):
     budget: BudgetSummary | dict[str, Any] | None = Field(default_factory=BudgetSummary)
     transport: TransportInfo | dict[str, Any] | None = Field(default_factory=dict)
     hotel: HotelInfo | dict[str, Any] | None = Field(default_factory=dict)
+    hotels: list[HotelInfo] | list[dict[str, Any]] | None = Field(default_factory=list)
     weather: WeatherInfo | dict[str, Any] | None = Field(default_factory=dict)
     assumptions_changed: list[str] | None = Field(default_factory=list)
     status: str | None = Field(default="feasible", description="feasible | infeasible")

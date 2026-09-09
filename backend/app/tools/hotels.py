@@ -1,78 +1,135 @@
 """
-Mock hotel search tool.
+Hotel availability integration layer.
 
-Returns hotels filtered by a per-night budget ceiling.
+Serves as the bridge between the agent's LLM interface and the underlying
+headless web scraper (`fetch_hotel.py`). Handles parameter normalization,
+date bounds checking, and response pagination to keep LLM context lightweight.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from typing import Any
 
-_HOTEL_DATA: dict[str, list[dict]] = {
-    "goa": [
-        {"name": "Backpacker's Nest", "price_per_night": 800, "rating": 3.2, "type": "hostel"},
-        {"name": "Seaside Budget Inn", "price_per_night": 1200, "rating": 3.8, "type": "budget"},
-        {"name": "Coastal Comfort", "price_per_night": 2500, "rating": 4.1, "type": "mid-range"},
-        {"name": "Goa Grand Resort", "price_per_night": 5500, "rating": 4.6, "type": "luxury"},
-        {"name": "Palm Beach Suites", "price_per_night": 8000, "rating": 4.8, "type": "premium"},
-    ],
-    "mumbai": [
-        {"name": "City Lodge", "price_per_night": 1500, "rating": 3.5, "type": "budget"},
-        {"name": "Marine Drive Stay", "price_per_night": 3500, "rating": 4.2, "type": "mid-range"},
-        {"name": "The Taj Mock", "price_per_night": 12000, "rating": 4.9, "type": "luxury"},
-    ],
-    "delhi": [
-        {"name": "Metro Inn", "price_per_night": 1000, "rating": 3.3, "type": "budget"},
-        {"name": "Capital Comfort", "price_per_night": 2800, "rating": 4.0, "type": "mid-range"},
-        {"name": "Imperial Mock", "price_per_night": 9500, "rating": 4.7, "type": "luxury"},
-    ],
-    "bangalore": [
-        {"name": "Tech Park Stay", "price_per_night": 1800, "rating": 3.6, "type": "budget"},
-        {"name": "Garden City Inn", "price_per_night": 3200, "rating": 4.1, "type": "mid-range"},
-    ],
-    "jaipur": [
-        {"name": "Pink City Hostel", "price_per_night": 600, "rating": 3.0, "type": "hostel"},
-        {"name": "Hawa Mahal View", "price_per_night": 1800, "rating": 3.9, "type": "budget"},
-        {"name": "Royal Heritage", "price_per_night": 4500, "rating": 4.5, "type": "luxury"},
-    ],
-    "kolkata": [
-        {"name": "Park Street Lodge", "price_per_night": 1100, "rating": 3.4, "type": "budget"},
-        {"name": "Howrah Comfort", "price_per_night": 2200, "rating": 3.8, "type": "mid-range"},
-    ],
-}
-
-_DEFAULT_HOTELS = [
-    {"name": "Budget Stay", "price_per_night": 1500, "rating": 3.5, "type": "budget"},
-    {"name": "Comfort Inn", "price_per_night": 3000, "rating": 4.0, "type": "mid-range"},
-]
+from app.tools.fetch_hotel import fetch_hotel_details
 
 
-def search_hotels(city: str, budget: float | None = None) -> dict:
+def search_hotels(
+    city_name: str,
+    checkin: str = "",
+    checkout: str = "",
+    adults: int = 1,
+    rooms: int = 1,
+    budget: float | None = None,
+) -> dict[str, Any]:
     """
-    Search for hotels in a city within an optional per-night budget.
+    Search for hotel options in a given city with check-in, check-out, adults, and rooms.
 
     Args:
-        city: City name to search hotels in (e.g. "Goa").
-        budget: Maximum price per night in INR (optional).
+        city_name: Destination city name (e.g. "Ahmedabad", "Goa").
+        checkin: Check-in date in YYYY-MM-DD format (e.g. "2026-08-24").
+        checkout: Check-out date in YYYY-MM-DD format (e.g. "2026-08-25").
+        adults: Number of adult guests (default: 1).
+        rooms: Number of rooms required (default: 1).
+        budget: Maximum budget per night in INR (optional).
 
     Returns:
-        A dict containing city, budget, currency, and a list of
-        matching hotels with name, price_per_night, rating, and type.
+        Dict with city_name, checkin, checkout, adults, rooms, budget, currency,
+        and list of hotels with real scraped fields (hotel_id, name, star_rating,
+        guest_rating_score, guest_rating_label, review_count, location, price,
+        display_price, currency, priced_check_in, priced_check_out, image).
     """
-    key = city.strip().lower()
-    try:
-        budget_limit = float(budget) if budget is not None else float('inf')
-    except (ValueError, TypeError):
-        budget_limit = float('inf')
-        
-    all_hotels = _HOTEL_DATA.get(key, _DEFAULT_HOTELS)
+    # Handle positional budget argument for backward compatibility (e.g. search_hotels("Goa", 2000))
+    if isinstance(checkin, (int, float)):
+        budget = float(checkin)
+        checkin = ""
 
-    matching = [h for h in all_hotels if h["price_per_night"] <= budget_limit]
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    if not checkin or not isinstance(checkin, str) or checkin.isdigit():
+        if isinstance(checkin, (int, float)) or (isinstance(checkin, str) and checkin.isdigit()):
+            try:
+                budget = float(checkin)
+            except ValueError:
+                pass
+        checkin = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+        
+    if not checkout or not isinstance(checkout, str):
+        checkout = (today + timedelta(days=8)).strftime("%Y-%m-%d")
+
+    # Parse and validate dates to prevent scraper crashing on past or inverted dates
+    try:
+        d1 = datetime.strptime(checkin, "%Y-%m-%d")
+    except Exception:
+        d1 = today + timedelta(days=7)
+        
+    try:
+        d2 = datetime.strptime(checkout, "%Y-%m-%d")
+    except Exception:
+        d2 = d1 + timedelta(days=1)
+
+    # Scraper cannot search for dates in the past
+    if d1 < today:
+        d1 = today + timedelta(days=7)
+        
+    # Checkout must be after checkin
+    if d2 <= d1:
+        d2 = d1 + timedelta(days=1)
+
+    checkin = d1.strftime("%Y-%m-%d")
+    checkout = d2.strftime("%Y-%m-%d")
+    nights = (d2 - d1).days
+
+    hotels = fetch_hotel_details(
+        city_name=city_name,
+        checkin=checkin,
+        checkout=checkout,
+        adults=int(adults) if adults else 1,
+        rooms=int(rooms) if rooms else 1,
+    )
+
+    try:
+        budget_limit = float(budget) if budget is not None else float("inf")
+    except (ValueError, TypeError):
+        budget_limit = float("inf")
+
+    # Calculate price per night for each scraped hotel
+    processed_hotels = []
+    for h in hotels:
+        raw_price = float(h.get("price") or 0)
+        
+        # Skip sold-out hotels which have missing or 0 price
+        if raw_price <= 0:
+            continue
+            
+        # Trip.com's scraped price is the total price for the full stay
+        per_night = round(raw_price / nights, 2) if nights > 0 else raw_price
+        item = dict(h)
+        item["total_stay_price"] = raw_price
+        item["price_per_night"] = per_night
+        item["price"] = per_night  # Standardise price field to per-night price
+        item["display_price_per_night"] = f"₹ {int(per_night):,}"
+        item["rating"] = float(h.get("star_rating") or 4.0)
+        item["type"] = "luxury" if (h.get("star_rating") or 0) >= 5 else ("mid-range" if (h.get("star_rating") or 0) >= 4 else "budget")
+        processed_hotels.append(item)
+
+    # Filter by per-night budget limit
+    matching = [h for h in processed_hotels if h["price_per_night"] <= budget_limit]
+    sorted_matching = sorted(matching, key=lambda x: x["price_per_night"])
+    
+    # Cap options to top 6 to keep LLM context light, fast, and within API timeout limits
+    options_to_return = sorted_matching[:6]
 
     return {
-        "city": city.strip().title(),
+        "city": city_name.strip().title(),
+        "checkin": checkin,
+        "checkout": checkout,
+        "nights": nights,
+        "adults": adults,
+        "rooms": rooms,
         "budget": budget,
         "currency": "INR",
-        "options": sorted(matching, key=lambda x: x["price_per_night"]),
-        "total_available": len(all_hotels),
-        "matching_count": len(matching),
+        "options": options_to_return,
+        "total_available": len(hotels),
+        "matching_count": len(options_to_return),
     }

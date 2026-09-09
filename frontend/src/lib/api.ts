@@ -2,13 +2,42 @@
  * TripCraft API Client
  */
 
-const API_BASE = "http://localhost:8000/api"
+const API_BASE = typeof window !== 'undefined'
+  ? `http://${window.location.hostname}:8000/api`
+  : "http://localhost:8000/api"
 const BEARER_TOKEN = "tripcraft-dev-token"
 
 export interface StartPlanResponse {
   session_id: string
   status: string
   message: string
+}
+
+function formatApiError(rawText: string, defaultMsg: string): string {
+  try {
+    const parsed = JSON.parse(rawText);
+    if (parsed.detail) {
+      if (typeof parsed.detail === "string") {
+        return parsed.detail;
+      }
+      if (Array.isArray(parsed.detail) && parsed.detail.length > 0) {
+        const first = parsed.detail[0];
+        if (first.type === "string_too_short" || (first.msg && first.msg.includes("5 characters"))) {
+          return "Please enter a more descriptive trip request (at least 5 characters).";
+        }
+        if (first.msg) {
+          return first.msg.charAt(0).toUpperCase() + first.msg.slice(1);
+        }
+      }
+    }
+  } catch (e) {
+    // If not JSON, use raw text if readable or defaultMsg
+    if (rawText && rawText.length < 100 && !rawText.includes("{")) {
+      return rawText;
+    }
+  }
+
+  return defaultMsg;
 }
 
 export async function startPlanningSession(goal: string): Promise<StartPlanResponse> {
@@ -22,8 +51,8 @@ export async function startPlanningSession(goal: string): Promise<StartPlanRespo
   })
 
   if (!response.ok) {
-    const error = await response.text()
-    throw new Error(`Failed to start planning: ${error}`)
+    const errorText = await response.text()
+    throw new Error(formatApiError(errorText, "Unable to start trip planning. Please check your prompt and try again."))
   }
 
   return response.json()
@@ -40,8 +69,8 @@ export async function provideUserInput(sessionId: string, input: string): Promis
   })
   
   if (!response.ok) {
-    const error = await response.text()
-    throw new Error(`Failed to submit input: ${error}`)
+    const errorText = await response.text()
+    throw new Error(formatApiError(errorText, "Unable to submit your response. Please try again."))
   }
   
   return response.json()
@@ -149,6 +178,38 @@ export async function fetchAgentState(sessionId: string): Promise<any> {
   
   if (!response.ok) {
     throw new Error("Failed to fetch state")
+  }
+  
+  return response.json()
+}
+
+export async function fetchHotelOptions(sessionId: string): Promise<any> {
+  const response = await fetch(`${API_BASE}/plan/${sessionId}/hotels`, {
+    headers: {
+      "Authorization": `Bearer ${BEARER_TOKEN}`
+    }
+  })
+  
+  if (!response.ok) {
+    throw new Error("Failed to fetch hotel options")
+  }
+  
+  return response.json()
+}
+
+export async function selectHotel(sessionId: string, hotelName: string, city?: string): Promise<any> {
+  const response = await fetch(`${API_BASE}/plan/${sessionId}/hotel`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${BEARER_TOKEN}`
+    },
+    body: JSON.stringify({ hotel_name: hotelName, city: city })
+  })
+  
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(formatApiError(errorText, "Failed to update hotel selection"))
   }
   
   return response.json()

@@ -1,10 +1,8 @@
 """
-LangChain LLM factory — multi-provider with automatic fallback.
+LangChain LLM factory supporting multi-provider setups with automatic failover.
 
-Providers tried in order:  Gemini → OpenRouter → NVIDIA NIM
-Any provider with a non-empty API key is included.
-
-To switch provider: just change the API key + model in .env.
+We cascade providers (Gemini -> OpenRouter -> NVIDIA NIM) to maximize reliability.
+The factory automatically instantiates clients for any provider with configured credentials.
 """
 
 from __future__ import annotations
@@ -23,17 +21,17 @@ logger = logging.getLogger(__name__)
 
 def create_llm(tools: list[Any]) -> BaseChatModel:
     """
-    Build a LangChain chat model bound with tools and automatic fallbacks.
+    Constructs a LangChain chat model with bound tools and built-in redundancy.
 
-    Provider priority: Gemini → OpenRouter → NVIDIA NIM
-    Any provider whose API key is set in .env is automatically included.
-    If the primary provider fails, LangChain transparently tries the next one.
+    Provider cascade: Gemini -> OpenRouter -> NVIDIA NIM.
+    This failover strategy ensures the system remains functional even if our primary
+    LLM provider experiences an outage or rate limiting.
 
     Args:
-        tools: LangChain StructuredTool objects to bind.
+        tools: A list of LangChain StructuredTool instances to expose to the LLM.
 
     Returns:
-        A LangChain chat model with tools bound and fallbacks configured.
+        A robust LangChain chat model equipped with tool calling and automatic failovers.
     """
     providers: list[BaseChatModel] = []
 
@@ -42,8 +40,8 @@ def create_llm(tools: list[Any]) -> BaseChatModel:
             model=settings.gemini_model,
             google_api_key=settings.gemini_api_key,  # type: ignore[arg-type]
             temperature=0.2,
-            max_retries=0,
-            timeout=30,
+            max_retries=2,
+            timeout=60,
         ))
         logger.info("Provider added: Gemini (%s)", settings.gemini_model)
 
@@ -75,10 +73,10 @@ def create_llm(tools: list[Any]) -> BaseChatModel:
             "GEMINI_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY in .env"
         )
 
-    # Bind tools to the primary provider
+    # Primary model is the first available provider; bind the tools to it directly
     primary = providers[0].bind_tools(tools)
 
-    # Chain fallbacks — each also needs tools bound
+    # Configure subsequent providers as automatic failovers, ensuring each also has access to the tools
     if len(providers) > 1:
         fallbacks = [p.bind_tools(tools) for p in providers[1:]]
         return primary.with_fallbacks(fallbacks)  # type: ignore[return-value]

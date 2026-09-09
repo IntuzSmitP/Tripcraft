@@ -1,17 +1,12 @@
 """
-Core agent loop — the heart of TripCraft.
+Core autonomous execution loop for the TripCraft planning agent.
 
-Implements the autonomous planning loop:
-    User Goal → LLM → Tool Call? → Execute → Store → LLM → … → Final Plan
+This module orchestrates the state machine governing the agent's behavior:
+    User Intent -> Prompt Evaluation -> Tool Dispatch -> State Mutation -> Plan Finalization
 
-Uses LangChain for LLM interaction. Provider switching and fallbacks
-are handled automatically by LangChain (see app/agent/llm.py).
-
-Message types:
-  - SystemMessage   — system prompt
-  - HumanMessage    — user / tool results
-  - AIMessage       — model response (may contain tool_calls)
-  - ToolMessage     — result of a tool call
+It integrates tightly with LangChain's message abstraction to manage the conversational
+context window while gracefully handling provider failovers, budget constraint
+violations, and human-in-the-loop (HITL) execution pauses.
 """
 
 from __future__ import annotations
@@ -37,6 +32,27 @@ from app.models.state import AgentState, ExecutionLogEntry
 
 logger = logging.getLogger(__name__)
 
+
+async def run_agent(
+    goal: str,
+    registry: ToolRegistry,
+    state: AgentState | None = None,
+    llm = None,
+) -> tuple[AgentState, FinalOutput | None]:
+    """Helper for non-streaming agent runs. Returns (state, final_output)."""
+    if state is None:
+        state = AgentState(goal=goal)
+    final_output = None
+    async for _ in run_agent_stream(goal, registry, state):
+        pass
+    if state.current_plan:
+        parsed = _parse_final_json(state.current_plan)
+        if parsed:
+            try:
+                final_output = FinalOutput(**parsed)
+            except Exception:
+                pass
+    return state, final_output
 
 async def run_agent_stream(
     goal: str,
@@ -73,7 +89,7 @@ async def run_agent_stream(
         state.iterations += 1
         logger.info("Agent iteration %d/%d", state.iterations, max_iterations)
 
-        # ── Build system prompt with current state ──────────────
+        # Build system prompt with current state
         state_summary = build_state_summary(
             goal=state.goal,
             constraints=state.constraints,
@@ -93,11 +109,13 @@ async def run_agent_stream(
             *messages,
         ]
 
-        # ── Call LLM (with automatic provider fallback) ─────────
+        # Call LLM (with automatic provider fallback)
         try:
             response: AIMessage = await llm.ainvoke(full_messages)  # type: ignore[assignment]
         except Exception as e:
-            entry = state.add_log("ERROR", f"LLM call failed: {e}")
+            from app.agent.error_messages import friendly_error
+            logger.error("LLM call failed: %s", e)
+            entry = state.add_log("ERROR", friendly_error(e))
             yield entry
             state.status = "error"
             break
@@ -105,7 +123,7 @@ async def run_agent_stream(
         # Add model response to conversation history
         messages.append(response)
 
-        # ── Handle tool calls ───────────────────────────────────
+        # Handle tool calls
         if response.tool_calls:
             for tc in response.tool_calls:
                 tool_name: str = tc["name"]
@@ -117,7 +135,7 @@ async def run_agent_stream(
                 entry = state.add_log("TOOL", f"{tool_name}({args_str})")
                 yield entry
 
-                # ── ask_user: pause and wait for input ──────────
+                # ask_user: pause and wait for input
                 if tool_name == "ask_user":
                     state.status = "waiting_for_user"
                     question = tool_args.get("question", "Awaiting user input...")
@@ -173,7 +191,7 @@ async def run_agent_stream(
             await asyncio.sleep(0.1)
             continue
 
-        # ── Handle text (final answer) ──────────────────────────
+        # Handle text (final answer)
         text = ""
         if isinstance(response.content, str):
             text = response.content
@@ -235,17 +253,17 @@ async def run_agent_stream(
             await asyncio.sleep(1)
             continue
 
-    # ── Max iterations guard ────────────────────────────────────
+    # Max iterations guard
     if state.status == "planning":
         state.status = "error"
         entry = state.add_log(
             "FINAL",
-            f"Reached maximum iterations ({max_iterations}) without completing the plan.",
+            "Your trip plan is taking longer than expected. Please try again with a simpler request.",
         )
         yield entry
 
 
-# ── Helpers ─────────────────────────────────────────────────────
+# Helpers
 
 def _parse_final_json(text: str) -> dict | None:
     """Try to parse JSON from the model text, stripping markdown fences if present."""

@@ -1,8 +1,9 @@
 """
-Quick smoke-test for the agent loop.
+End-to-end integration smoke test.
 
-Supplies realistic answers when the agent asks questions so it can
-actually complete a planning session without burning extra API calls.
+Simulates realistic human-in-the-loop (HITL) responses to agent queries,
+allowing full lifecycle validation of the planning session without requiring
+interactive user input or incurring excessive API latency.
 """
 import asyncio
 from app.agent.loop import run_agent_stream
@@ -30,7 +31,7 @@ def _answer_for(question: str) -> str:
     return "28th September 2026 with a budget of ₹40,000."
 
 
-async def main():
+async def run_smoke_test():
     registry = ToolRegistry()
     registry.register("search_flights", search_flights)
     registry.register("search_hotels", search_hotels)
@@ -51,7 +52,7 @@ async def main():
             waiting_entries = [e for e in state.execution_log if e.action == "WAITING"]
             question = waiting_entries[-1].detail if waiting_entries else ""
             answer = _answer_for(question)
-            print(f"        >> Auto-reply: {answer}")
+            print(f" -->> Auto-reply: {answer}")
             state.user_input = answer
             state.status = "planning"
 
@@ -62,4 +63,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_smoke_test())
