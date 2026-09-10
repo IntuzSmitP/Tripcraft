@@ -93,7 +93,7 @@ def search_hotels(
     except (ValueError, TypeError):
         budget_limit = float("inf")
 
-    # Calculate price per night for each scraped hotel
+    # Process scraped hotel pricing (scraper provides per-night price)
     processed_hotels = []
     for h in hotels:
         raw_price = float(h.get("price") or 0)
@@ -102,10 +102,11 @@ def search_hotels(
         if raw_price <= 0:
             continue
             
-        # Trip.com's scraped price is the total price for the full stay
-        per_night = round(raw_price / nights, 2) if nights > 0 else raw_price
+        # Scraper returns per-night price; multiply by nights to calculate total stay price
+        per_night = raw_price
+        total_stay_price = round(per_night * nights, 2) if nights > 0 else per_night
         item = dict(h)
-        item["total_stay_price"] = raw_price
+        item["total_stay_price"] = total_stay_price
         item["price_per_night"] = per_night
         item["price"] = per_night  # Standardise price field to per-night price
         item["display_price_per_night"] = f"₹ {int(per_night):,}"
