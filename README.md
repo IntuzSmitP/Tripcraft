@@ -94,8 +94,8 @@ tripcraft/
 |   |-- src/             # Next.js UI components and pages
 |   |-- package.json
 |   `-- next.config.ts
-|-- Screenshots/
-|   `-- logo.jpg
+|-- Screenshots/         # logo and project screenshots
+|   `-- logo.jpg        
 |-- setup.sh
 `-- README.md
 ```
@@ -105,11 +105,11 @@ tripcraft/
 ## Screenshots
 
 <div align="center">
+  <img src="Screenshots/ss4.png" alt="Tripcraft Interface 4" width="45%" style="margin: 10px;" />
+  <img src="Screenshots/ss5.png" alt="Tripcraft Interface 5" width="45%" style="margin: 10px;" />
   <img src="Screenshots/ss1.png" alt="Tripcraft Interface 1" width="45%" style="margin: 10px;" />
   <img src="Screenshots/ss2.png" alt="Tripcraft Interface 2" width="45%" style="margin: 10px;" />
   <img src="Screenshots/ss3.png" alt="Tripcraft Interface 3" width="45%" style="margin: 10px;" />
-  <img src="Screenshots/ss4.png" alt="Tripcraft Interface 4" width="45%" style="margin: 10px;" />
-  <img src="Screenshots/ss5.png" alt="Tripcraft Interface 5" width="45%" style="margin: 10px;" />
 </div>
 
 ---
@@ -206,15 +206,6 @@ Available at: `http://localhost:3000`
 | Next.js | Frontend React framework |
 | langchain-core | Framework for LLM agent integration |
 | python-dotenv | Environment variable management |
-
----
-
-## Testing
-
-```bash
-cd backend
-uv run pytest app/tests/ -v
-```
 
 ---
 
